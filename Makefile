@@ -131,6 +131,10 @@ verify-manifests: manifests
 verify-nested-vendor:
 	./scripts/check-staging-vendor.sh
 
+.PHONY: verify-commits
+verify-commits:
+	./scripts/verify_commits $(TARGET_BRANCH)
+
 .PHONY: verify
 verify:
 	echo "Checking for unstaged root vendor changes"

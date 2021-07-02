@@ -1,0 +1,28 @@
+name: verify-commits
+on:
+  pull_request:
+    branches:
+    # TODO: retrigger when any of these branches change
+    - master
+    - main
+    - release-*
+defaults:
+  run:
+    shell: bash
+jobs:
+  verify-commits:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+      # fetch all commits for the PR
+      fetch-depth: 0
+      ref: ${{ github.event.pull_request.head.sha }}
+      # the fetch depth is important here, we need to see all the commits being introduced by the PR to verify
+      # that they are well formed. By default, the checkout action only fetches the latest commit
+    - run: |
+        # add and fetch upstream remotes
+        git remote add --fetch api https://github.com/operator-framework/api.git
+        git remote add --fetch operator-registry https://github.com/operator-framework/operator-registry.git
+        git remote add --fetch operator-lifecycle-manager https://github.com/operator-framework/operator-lifecycle-manager.git
+    - run: TARGET_BRANCH=${{ github.base_ref }} make verify-commits
+

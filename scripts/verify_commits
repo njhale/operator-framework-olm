@@ -1,0 +1,110 @@
+#!/bin/bash
+
+function err() {
+    echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: $*" >&2
+}
+
+function verify_staging_diff() {
+    local remote="${1}"
+    local upstream_commit="${2}"
+    local downstream_commit="${3}"
+    local staging_dir="staging/${remote}"
+
+    local outside_staging
+    outside_staging="$(git show --name-only "${downstream_commit}" -- ":!${staging_dir}")"
+    if [[ -n "${outside_staging}" ]]; then
+        err "downstream staging commit ${downstream_commit} changes files outside of ${staging_dir}:"
+        err "${outside_staging}"
+        err "factor out changes to ${staging_dir} into a standalone commit"
+        return 1
+    fi
+
+    local divergence
+    divergence="$(git diff --stat "${upstream_commit}" "${downstream_commit}:${staging_dir}" -- ':!vendor')"
+    if [[ -n "${divergence}" ]]; then
+        err "downstream staging commit ${downstream_commit} diverges from upstream commit ${upstream_commit}:"
+        err "${divergence}"
+        err "changes must match referenced upstream commit ${upstream_commit}"
+        return 1
+    fi
+}
+
+function verify_root_diff() {
+    local downstream_commit="${1}"
+
+    local inside_staging
+    inside_staging="$(git show --name-only "${downstream_commit}" -- staging)"
+    if [[ -n "${inside_staging}" ]]; then
+        err "downstream non-staging commit ${downstream_commit} changes staging"
+        err "${inside_staging}"
+        err "only staging commits (i.e. from an upstream cherry-pick) may change staging"
+
+        return 1
+    fi
+}
+
+function upstream_ref() {
+    local downstream_commit="${1}"
+
+    local log
+    log="$(git log -n 1 "${downstream_commit}")"
+
+    local -a upstream_repos
+    mapfile -t upstream_repos < <(echo "${log}" | grep 'Upstream-repository:' | awk '{print $2}')
+
+    local -a upstream_commits
+    mapfile -t upstream_commits < <(echo "${log}" | grep 'Upstream-commit:' | awk '{print $2}')
+
+    if (( ${#upstream_repos[@]} < 1 && ${#upstream_commits[@]} < 1 )); then
+        # no upstream commit referenced
+        return 0
+    fi
+
+    if (( ${#upstream_repos[@]} > 1 )); then
+        err "downstream staging commit ${downstream_commit} references more than one upstream repo:"
+        err "${upstream_repos[@]}"
+        err "staging commits may only reference a single upstream repo"
+        return 1
+    fi
+
+    if (( ${#upstream_commits[@]} > 1 )); then
+        err "downstream staging commit ${downstream_commit} references more than one upstream commit:"
+        err "${upstream_commits[@]}"
+        err "staging commits may only reference a single upstream commit"
+        return 1
+    fi
+
+    if git branch -r --contains "${upstream_commits[0]}" | grep -vq "${upstream_repos[0]}/.*"; then
+        err "downstream staging commit ${downstream_commit} references upstream commit ${upstream_commits[0]} that doesn't exist in ${upstream_repos[0]}"
+        err "staging commits must reference a repository containing the given upstream commit"
+        return 1
+    fi
+
+    echo "${upstream_repos[0]}"
+    echo "${upstream_commits[0]}"
+}
+
+function main() {
+    local target_branch="${1:-master}"
+
+    # get all commits we're introducing into the target branch
+    local -a new_commits
+    mapfile -t new_commits < <(git rev-list HEAD "^${target_branch}")
+
+    local -a sr
+    for commit in "${new_commits[@]}"; do
+        mapfile -t sr < <(upstream_ref "${commit}")
+        if (( ${#sr[@]} < 2 )); then # the ref contains a tuple if the values were properly parsed from the commit message
+            # couldn't find staging cherry-pick reference in the commit message
+            # verify as a downstream-only commit
+            verify_root_diff "${commit}"
+        else
+            # found staging cherry-pick reference in commit message
+            # verify as a staging update
+            verify_staging_diff "${sr[@]}" "${commit}"
+        fi
+
+    done
+}
+
+main "$@"
